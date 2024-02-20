@@ -1,1 +1,8 @@
-
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+- family-names: "Nielsen"
+  given-names: "Jeppe Lindeskov"
+title: "Masters Thesis Github"
+version: 1.0.0
+url: "https://github.com/JLN01/MastersThesis"
