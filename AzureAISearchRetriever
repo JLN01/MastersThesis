@@ -1,0 +1,43 @@
+import os
+from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain.vectorstores.azuresearch import AzureSearch
+from langchain.document_loaders import AzureBlobStorageContainerLoader
+from langchain.text_splitter import CharacterTextSplitter
+from dotenv import load_dotenv
+from langchain_openai import AzureOpenAIEmbeddings
+
+#Using dotenv in order to access my secret keys, could be to the LLM, vector database, search etc. It keeps it connected to Azure
+dotenv_path = '\.env'
+
+load_dotenv(dotenv_path=dotenv_path)
+
+vector_store_address: str = f"https://{os.environ.get('AZURE_AI_SEARCH_SERVICE_NAME')}.search.windows.net"
+vector_store_address
+
+model: str = "text-embedding-ada-002"
+
+embeddings: OpenAIEmbeddings = OpenAIEmbeddings(deployment=model, chunk_size=1)
+index_name: str = "langchain-vector-demo"
+vector_store: AzureSearch = AzureSearch(
+    azure_search_endpoint=vector_store_address,
+    azure_search_key=os.environ.get("AZURE_AI_SEARCH_API_KEY"),
+    index_name=index_name,
+    embedding_function=embeddings.embed_query,
+)
+
+#Loading in the Azure container, so everything that goes into ESG Library, gets sorted into the vector database
+loader = AzureBlobStorageContainerLoader(
+    conn_str=os.environ.get("AZURE_CONN_STRING"),
+    container=os.environ.get("CONTAINER_NAME"),
+)
+
+documents = loader.load()
+
+#For now, the chunk size is here set to 150 and chunk overlap to 20, this can the fine tuned after testing, in order to 
+#increase the accuracy and decrease hallucinations in the model based on user feedback
+text_splitter = CharacterTextSplitter(chunk_size=150, chunk_overlap=20)
+docs = text_splitter.split_documents(documents)
+
+vector_store.add_documents(docs)
+
+print("Data loaded into vectorstore successfully")
