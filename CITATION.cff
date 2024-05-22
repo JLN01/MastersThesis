@@ -4,5 +4,5 @@ authors:
 - family-names: "Nielsen"
   given-names: "Jeppe Lindeskov"
 title: "Masters Thesis - Data Science, LLMs for organizational context"
-version: 1.0.0
+version: 1.0.1
 url: "https://github.com/JLN01/MastersThesis"
