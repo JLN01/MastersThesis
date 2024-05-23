@@ -1,0 +1,60 @@
+import pandas as pd
+from rouge import Rouge
+import csv
+import matplotlib.pyplot as plt
+
+# Define file paths for the selected models
+file_paths = {
+    'gpt4_with_improved_prompt_text_embedding_003_small_k10_chunk1000': "gpt4_answers2_text-embedding-3-small_with_improved_prompt_k_equal10_chunk1000.csv",
+    'gpt35_with_improved_prompt_text_embedding_003_small_k10_chunk1000': "gpt35_answers2_text-embedding-3-small_with_improved_prompt_k_equal10_chunk1000.csv",
+    'mistralsmall_improved_with_prompt_text_embedding_003_small_k10_chunk1000': "mistralSmall2_answers_text-embedding-3-small_with_improved_prompt_k_equal10_chunk1000.csv",
+    'mistralLARGE_with_improved_prompt_text_embedding_003_small_k10_chunk1000': "1000/mistralLarge2_answers_text-embedding-3-small_with_improved_prompt_k_equal10_chunk1000.csv"
+}
+
+# Load data
+dataframes = {name: pd.read_csv(path) for name, path in file_paths.items()}
+
+# Calculate average response time for each model
+average_response_times = {name: df['Response Time'].mean() for name, df in dataframes.items()}
+
+# Load ground truth
+df_ground_truth = pd.read_excel("LLMQuestions.xlsx")
+df_ground_truth['question'] = df_ground_truth['Questions'].astype(str)
+df_ground_truth['ground_truth'] = df_ground_truth['Ground truth'].astype(str)
+
+# Ensure columns are strings
+for name, df in dataframes.items():
+    df['question'] = df['Question'].astype(str)
+    df['answer'] = df['Answer'].astype(str)
+
+# Initialize ROUGE calculator
+rouge = Rouge()
+
+# Function to calculate ROUGE scores
+def calculate_rouge_scores(ground_truth, prediction):
+    scores = rouge.get_scores(prediction, ground_truth, avg=True)
+    return scores
+
+# Calculate ROUGE scores for each dataframe
+for name, df in dataframes.items():
+    df = df.merge(df_ground_truth[['question', 'ground_truth']], on='question', how='left')
+    df['rouge_scores'] = df.apply(lambda row: calculate_rouge_scores(row['ground_truth'], row['answer']), axis=1)
+    for metric in ['rouge-1', 'rouge-2', 'rouge-l']:
+        for score_type in ['f', 'p', 'r']:
+            df[f'{metric}_{score_type}'] = df['rouge_scores'].apply(lambda x: x[metric][score_type])
+    dataframes[name] = df
+
+# Combine all results into one dataframe for analysis
+combined_results = pd.concat(dataframes.values(), keys=dataframes.keys())
+
+# Average the scores for each model
+average_scores = combined_results.groupby(level=0).mean()[['rouge-1_f', 'rouge-1_p', 'rouge-1_r', 
+                                                           'rouge-2_f', 'rouge-2_p', 'rouge-2_r', 
+                                                           'rouge-l_f', 'rouge-l_p', 'rouge-l_r']]
+
+# Combine average scores and response times
+average_scores['avg_response_time'] = average_scores.index.map(average_response_times)
+
+# Display the results in a table
+print("Average ROUGE Scores and Response Times for Selected Models")
+print(average_scores)
