@@ -1,0 +1,155 @@
+import os
+import pandas as pd
+import pdfplumber
+from langchain_community.chat_models import AzureChatOpenAI
+from azure.core.credentials import AzureKeyCredential
+import mlflow
+from dotenv import load_dotenv
+from tqdm.auto import tqdm
+import pandas as pd
+from typing import Optional, List, Tuple
+import json
+import datasets
+from huggingface_hub import notebook_login
+from datasets import Dataset
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.docstore.document import Document as LangchainDocument
+from huggingface_hub import InferenceClient
+from langchain.llms.base import LLM
+from typing import List
+from langchain import PromptTemplate
+from langchain.chains import ConversationalRetrievalChain
+from langchain.memory import ConversationBufferMemory
+from langchain_community.retrievers import AzureAISearchRetriever
+import random
+
+pd.set_option("display.max_colwidth", None)
+
+#Using dotenv in order to access my secret keys, could be to the LLM, vector database, search etc. It keeps it connected to Azure
+dotenv_path = '/.env'
+load_dotenv(dotenv_path=dotenv_path)
+
+notebook_login()
+
+def extract_text_from_pdf(pdf_path):
+    with pdfplumber.open(pdf_path) as pdf:
+        text_content = [page.extract_text() for page in pdf.pages if page.extract_text()]
+    return "\n".join(text_content)
+
+# Path to your PDF file
+pdf_path = "ESG Knowledge Library\Annual-Report-2023.pdf"
+pdf_text = extract_text_from_pdf(pdf_path)
+
+# Creating a DataFrame including the source
+data = {
+    'text': [pdf_text],  # Assuming pdf_text contains the full text from your PDF
+    'source': [pdf_path]  # Include the PDF file name as source
+}
+
+df = pd.DataFrame(data)
+# Convert DataFrame to Dataset
+ds = Dataset.from_pandas(df)
+
+# Example operations on the dataset
+ds = ds.map(lambda example: {'length': len(example['text'])})  # Adding a column with the length of each text
+
+langchain_docs = [LangchainDocument(page_content=doc["text"], metadata={"source": doc["source"]}) for doc in tqdm(ds)]
+
+
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=2000,
+    chunk_overlap=200,
+    add_start_index=True,
+    separators=["\n\n", "\n", ".", " ", ""],
+)
+
+docs_processed = []
+for doc in langchain_docs:
+    docs_processed += text_splitter.split_documents([doc])
+
+repo_id = "mistralai/Mixtral-8x7B-Instruct-v0.1"
+
+llm_client = InferenceClient(
+    model=repo_id,
+    timeout=120,
+)
+
+def call_llm(inference_client: InferenceClient, prompt: str):
+    response = inference_client.post(
+        json={
+            "inputs": prompt,
+            "parameters": {"max_new_tokens": 1000},
+            "task": "text-generation",
+        },
+    )
+    return json.loads(response.decode())[0]["generated_text"]
+
+
+call_llm(llm_client, "This is a test context")
+
+class HuggingFaceInferenceLLM(LLM):
+    def __init__(self, model_id: str, timeout: int = 120):
+        self.inference_client = InferenceClient(model=model_id, timeout=timeout)
+
+    def _call(self, prompt: str, stop: List[str] = None) -> str:
+        response = self.inference_client.post(
+            json={
+                "inputs": prompt,
+                "parameters": {"max_new_tokens": 1000},
+                "task": "text-generation",
+            },
+        )
+        return json.loads(response.content.decode())[0]["generated_text"]
+
+    @property
+    def _llm_type(self) -> str:
+        return "huggingface-inference"
+
+    def _generate(self, prompts: List[str], stop: List[str] = None) -> List[str]:
+        responses = []
+        for prompt in prompts:
+            response = self._call(prompt, stop)
+            responses.append(response)
+        return responses
+
+QA_generation_prompt = """
+Your task is to write a factoid question and an answer given a context.
+Your factoid question should be answerable with a specific, concise piece of factual information from the context.
+Your factoid question should be formulated in the same style as questions users could ask in a search engine.
+This means that your factoid question MUST NOT mention something like "according to the passage" or "context".
+
+Provide your answer as follows:
+
+Output:::
+Factoid question: (your factoid question)
+Answer: (your answer to the factoid question)
+
+Now here is the context.
+
+Context: {context}\n
+Output:::"""
+
+N_GENERATIONS = 5  # We intentionally generate only 10 QA couples here for cost and time considerations
+
+print(f"Generating {N_GENERATIONS} QA couples...")
+
+outputs = []
+for sampled_context in tqdm(random.sample(docs_processed, N_GENERATIONS)):
+    # Generate QA couple
+    output_QA_couple = call_llm(llm_client, QA_generation_prompt.format(context=sampled_context.page_content))
+    try:
+        question = output_QA_couple.split("Factoid question: ")[-1].split("Answer: ")[0]
+        answer = output_QA_couple.split("Answer: ")[-1]
+        assert len(answer) < 300, "Answer is too long"
+        outputs.append(
+            {
+                "context": sampled_context.page_content,
+                "question": question,
+                "answer": answer,
+                "source_doc": sampled_context.metadata["source"],
+            }
+        )
+    except:
+        continue
+
+display(pd.DataFrame(outputs).head(1))
